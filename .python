@@ -1,0 +1,276 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+sns.set(style="whitegrid", context="talk")
+plt.rcParams["figure.figsize"] = (12, 6)
+
+# -----------------------------
+# Config: adjust to your columns
+# -----------------------------
+COLS = {
+    "order_id": "OrderID",
+    "date": "OrderDate",
+    "city": "City",
+    "state": "State",
+    "category": "Category",
+    "sub_category": "Sub-Category",
+    "product_name": "ProductName",
+    "quantity": "Quantity",
+    "amount": "Amount",
+    "profit": "Profit",
+    "payment_mode": "PaymentMode",
+    "segment": "Segment",
+}
+
+# -----------------------------
+# Utilities
+# -----------------------------
+def add_year_month(df, date_col):
+    df["YearMonth"] = df[date_col].dt.to_period("M").astype(str)
+    df["Year"] = df[date_col].dt.year
+    df["Month"] = df[date_col].dt.month
+    return df
+
+def load_data(csv_path):
+    df = pd.read_csv(csv_path)
+    return df
+
+def explore_data(df):
+    print("\n--- Head ---")
+    print(df.head())
+    print("\n--- Shape ---")
+    print(df.shape)
+    print("\n--- Dtypes ---")
+    print(df.dtypes)
+    print("\n--- Missing values ---")
+    print(df.isna().sum())
+
+def clean_preprocess(df):
+    # Strip whitespace from object columns
+    obj_cols = df.select_dtypes(include="object").columns
+    df[obj_cols] = df[obj_cols].apply(lambda s: s.str.strip())
+
+    # Convert date
+    df[COLS["date"]] = pd.to_datetime(df[COLS["date"]], errors="coerce")
+
+    # Numeric coercion
+    for c in [COLS["quantity"], COLS["amount"], COLS["profit"]]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Handle missing values (simple strategy)
+    # Drop rows with missing critical fields
+    critical = [COLS["date"], COLS["city"], COLS["state"], COLS["product_name"]]
+    df = df.dropna(subset=critical)
+
+    # Fill numeric NaNs with 0
+    for c in [COLS["quantity"], COLS["amount"], COLS["profit"]]:
+        df[c] = df[c].fillna(0)
+
+    # Fill categorical NaNs with "Unknown"
+    cat_cols = [COLS["category"], COLS["sub_category"], COLS["payment_mode"], COLS["segment"]]
+    for c in cat_cols:
+        if c in df.columns:
+            df[c] = df[c].fillna("Unknown")
+
+    # Add YearMonth
+    df = add_year_month(df, COLS["date"])
+
+    print("\nData cleaned. Dtypes:")
+    print(df.dtypes)
+    return df
+
+# -----------------------------
+# Operational insights
+# -----------------------------
+def payment_method_usage(df):
+    pm = df[COLS["payment_mode"]].value_counts().rename_axis("PaymentMode").reset_index(name="Count")
+    print("\n--- Payment method usage ---")
+    print(pm)
+    return pm
+
+def top_cities_by_orders(df, top_n=10):
+    city_counts = df[COLS["city"]].value_counts().rename_axis("City").reset_index(name="Orders")
+    top_cities = city_counts.head(top_n)
+    print(f"\n--- Top {top_n} cities by orders ---")
+    print(top_cities)
+    return top_cities
+
+def monthly_order_volume(df):
+    mov = df["YearMonth"].value_counts().sort_index().rename_axis("YearMonth").reset_index(name="Orders")
+    print("\n--- Monthly order volume ---")
+    print(mov)
+    return mov
+
+# -----------------------------
+# Product analysis
+# -----------------------------
+def product_performance(df):
+    grp = df.groupby(COLS["product_name"]).agg(
+        avg_price=(COLS["amount"], "mean"),
+        total_qty=(COLS["quantity"], "sum"),
+        total_revenue=(COLS["amount"], "sum")
+    ).reset_index()
+
+    # Overpriced underperformers: high avg price, low qty
+    # Use median thresholds to avoid arbitrary cutoffs
+    price_thr = grp["avg_price"].median()
+    qty_thr = grp["total_qty"].median()
+    overpriced_underperformers = grp[(grp["avg_price"] > price_thr) & (grp["total_qty"] < qty_thr)].sort_values(
+        ["avg_price", "total_qty"], ascending=[False, True]
+    )
+
+    print("\n--- Overpriced underperformers (median-based) ---")
+    print(overpriced_underperformers.head(15))
+    return grp, overpriced_underperformers
+
+def category_preferences_by_segment(df):
+    if COLS["segment"] not in df.columns:
+        print("\nSegment column not found; skipping segment analysis.")
+        return None
+    seg_pref = df.groupby([COLS["segment"], COLS["category"]])[COLS["quantity"]].sum().reset_index().sort_values(
+        [COLS["segment"], COLS["quantity"]], ascending=[True, False]
+    )
+    print("\n--- Category preferences by segment (by quantity) ---")
+    print(seg_pref.head(20))
+    return seg_pref
+
+# -----------------------------
+# Visualizations
+# -----------------------------
+def plot_top10_products_by_revenue(df):
+    top_rev = (
+        df.groupby(COLS["sub_category"])[COLS["amount"]]
+        .sum()
+        .sort_values(ascending=False)
+        .head(10)
+        .reset_index()
+    )
+    ax = sns.barplot(data=top_rev, x=COLS["sub_category"], y=COLS["amount"], palette="viridis")
+    ax.set_title("Top 10 Products (Sub-Category) by Total Revenue")
+    ax.set_xlabel("Sub-Category")
+    ax.set_ylabel("Total Revenue")
+    plt.xticks(rotation=30, ha="right")
+    plt.tight_layout()
+    plt.show()
+    return top_rev
+
+def plot_monthly_order_trend(df):
+    mov = monthly_order_volume(df)
+    ax = sns.lineplot(data=mov, x="YearMonth", y="Orders", marker="o", linewidth=2.5, color="royalblue")
+    ax.set_title("Monthly Order Volume Over Time")
+    ax.set_xlabel("Year-Month")
+    ax.set_ylabel("Number of Orders")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.show()
+    return mov
+
+def plot_top10_states_by_profit(df):
+    state_profit = (
+        df.groupby(COLS["state"])[COLS["profit"]]
+        .sum()
+        .sort_values(ascending=False)
+        .head(10)
+        .reset_index()
+    )
+    ax = sns.barplot(data=state_profit, y=COLS["state"], x=COLS["profit"], palette="magma")
+    ax.set_title("Top 10 States by Total Profit")
+    ax.set_xlabel("Total Profit")
+    ax.set_ylabel("State")
+    plt.tight_layout()
+    plt.show()
+    return state_profit
+
+def plot_profit_by_payment_mode(df):
+    pm_profit = (
+        df.groupby(COLS["payment_mode"])[COLS["profit"]]
+        .sum()
+        .sort_values(ascending=False)
+        .reset_index()
+    )
+    ax = sns.barplot(data=pm_profit, x=COLS["payment_mode"], y=COLS["profit"], palette="cubehelix")
+    ax.set_title("Total Profit by Payment Mode")
+    ax.set_xlabel("Payment Mode")
+    ax.set_ylabel("Total Profit")
+    plt.xticks(rotation=30, ha="right")
+    plt.tight_layout()
+    plt.show()
+    return pm_profit
+
+# -----------------------------
+# Export reports
+# -----------------------------
+def export_top_products_and_monthly_orders(df, out_csv="top_products_and_monthly_orders.csv"):
+    # Top 10 products by revenue (Category + Sub-Category)
+    top_products = (
+        df.groupby([COLS["category"], COLS["sub_category"]])[COLS["amount"]]
+        .sum()
+        .sort_values(ascending=False)
+        .head(10)
+        .reset_index()
+    )
+    top_products.columns = ["Top Product Category", "Sub-Category", "Total Revenue"]
+
+    # Monthly order volume
+    mov = monthly_order_volume(df)
+    mov = mov.sort_values("YearMonth").reset_index(drop=True)
+    mov = mov.rename(columns={"YearMonth": "Month", "Orders": "Number of Orders"})
+
+    # Align rows (first 10 months to match top products)
+    mov_10 = mov.head(10)
+
+    combined = pd.concat([top_products, mov_10], axis=1)
+    combined.to_csv(out_csv, index=False)
+    print(f"\nExported: {out_csv}")
+    print(combined.head(10))
+    return combined
+
+# -----------------------------
+# Menu
+# -----------------------------
+def run_menu(df):
+    while True:
+        print("\n--- Menu ---")
+        print("1. Load & Explore Sales Data")
+        print("2. Clean & Preprocess the Data")
+        print("3. Analyze Payment Method Trends")
+        print("4. View City-Wise Order Performance")
+        print("5. Find Premium Products with Low Sales")
+        print("6. Visualizations (All 4)")
+        print("7. Export Business Reports (CSV)")
+        print("0. Exit")
+
+        choice = input("Enter choice: ").strip()
+
+        if choice == "1":
+            explore_data(df)
+        elif choice == "2":
+            df = clean_preprocess(df)
+        elif choice == "3":
+            payment_method_usage(df)
+        elif choice == "4":
+            top_cities_by_orders(df, top_n=10)
+        elif choice == "5":
+            _, overpriced = product_performance(df)
+        elif choice == "6":
+            plot_top10_products_by_revenue(df)
+            plot_monthly_order_trend(df)
+            plot_top10_states_by_profit(df)
+            plot_profit_by_payment_mode(df)
+        elif choice == "7":
+            export_top_products_and_monthly_orders(df)
+        elif choice == "0":
+            print("Goodbye.")
+            break
+        else:
+            print("Invalid choice. Try again.")
+
+def main():
+    csv_path = input("Enter path to sales CSV: ").strip()
+    df = load_data(csv_path)
+    run_menu(df)
+
+if __name__ == "__main__":
+    main()
